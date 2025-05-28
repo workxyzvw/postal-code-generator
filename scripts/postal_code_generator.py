@@ -26,50 +26,88 @@ except NameError:
     base_dir = os.getcwd()
 
 input_file = os.path.join(base_dir, "../data/village_postal_code.xlsx")
-# Menaikkan versi file output dan folder batches
-output_file = os.path.join(base_dir, "../data/village_postal_code_enhanced_v12.xlsx")
-batches_dir = os.path.join(base_dir, "../data/batches_enhanced_v12")
 
-# --- KONFIGURASI PENGGUNA ---
+# --- KONFIGURASI PENGGUNA UNTUK MANUAL CHUNKING ---
+# Setiap orang yang menjalankan skrip perlu menyesuaikan tiga variabel ini.
+MY_PROCESS_ID = "chief"  # Contoh: "chief", "teman1", "orang_1", "bagian_a", dll.
+MY_START_ROW_ABSOLUTE = 620  # Indeks baris Python (0-based) dari file Excel ASLI untuk MULAI proses
+MY_END_ROW_EXCLUSIVE_ABSOLUTE = 13857  # Indeks baris Python (0-based) dari file Excel ASLI untuk BERHENTI (eksklusif)
+# Contoh: Untuk memproses baris 1-10000 di Excel, set MY_START_ROW_ABSOLUTE = 0, MY_END_ROW_EXCLUSIVE_ABSOLUTE = 10000
+# Contoh: Untuk Chief (lanjutan dari 620 data):
+# MY_PROCESS_ID = "chief"
+# MY_START_ROW_ABSOLUTE = 620
+# MY_END_ROW_EXCLUSIVE_ABSOLUTE = 28334
+# -------------------------------------------------
+
 BATCH_SIZE = 20
-MAX_RETRIES_NOMOR_NET = 3  # Jumlah maksimal percobaan ulang untuk nomor.net
-RETRY_DELAY_NOMOR_NET = 5  # Jeda waktu (detik) antar percobaan ulang
+MAX_RETRIES_NOMOR_NET = 3
+RETRY_DELAY_NOMOR_NET = 5
 
-# Placeholder strings constants for clarity and precise checking
+# --- Nama File Output & Folder Batch (dengan penanda chunk) ---
+output_file_suffix = f"_part_{MY_PROCESS_ID}_{MY_START_ROW_ABSOLUTE}-{MY_END_ROW_EXCLUSIVE_ABSOLUTE - 1}"
+output_file = os.path.join(base_dir, f"../data/village_postal_code_enhanced_v14{output_file_suffix}.xlsx")
+batches_dir = os.path.join(base_dir, f"../data/batches_enhanced_v14{output_file_suffix}")
+
+# Placeholder strings constants
 PH_PROV = "provinsi-kosong"
 PH_REG = "kabupaten-kosong"
 PH_DIST = "kecamatan-kosong"
 PH_VIL = "desa-kosong"
-
-# For nomor.net, specific query parts derived from placeholders
 PH_VIL_NOMOR_QUERY_PART = PH_VIL.replace('-', ' ')
 PH_DIST_NOMOR_QUERY_PART = PH_DIST.replace('-', ' ')
-# Encoded versions for URL checking in nomor.net
 ENCODED_PH_VIL_NOMOR = requests.utils.quote(PH_VIL_NOMOR_QUERY_PART)
 ENCODED_PH_DIST_NOMOR = requests.utils.quote(PH_DIST_NOMOR_QUERY_PART)
 
 # --- DEBUGGING FLAG ---
 DEBUG_TARGET_VILLAGE = "gunong pulo"
 DEBUG_TARGET_DISTRICT = "kluet utara"
-ENABLE_DETAILED_DEBUG = False  # Set ke True untuk debug detail pada target di atas
+ENABLE_DETAILED_DEBUG = False
 
-if not os.path.exists(batches_dir):
-    os.makedirs(batches_dir)
-    print(f"Folder {batches_dir} telah dibuat.")
+print(f"--- DEBUG: Base directory (base_dir): {base_dir} ---")
+print(f"--- DEBUG: Target input file: {input_file} ---")
+print(f"--- DEBUG (ID: {MY_PROCESS_ID}): Target output file: {output_file} ---")
+print(f"--- DEBUG (ID: {MY_PROCESS_ID}): Target batches directory: {batches_dir} ---")
 
 try:
-    df = pd.read_excel(input_file, sheet_name="villages")
-    print(f"File {input_file} berhasil dibaca. Jumlah baris: {len(df)}")
+    if not os.path.exists(batches_dir):
+        os.makedirs(batches_dir)
+        print(f"Folder {batches_dir} telah berhasil dibuat.")
+    else:
+        print(f"Folder {batches_dir} sudah ada.")
+except Exception as e:
+    print(f"--- ERROR: Gagal membuat atau mengakses folder batches: {batches_dir} ---")
+    print(f"Error: {e}")
+    exit(1)
+
+try:
+    df_full = pd.read_excel(input_file, sheet_name="villages")
+    print(f"File {input_file} berhasil dibaca. Jumlah baris total di Excel: {len(df_full)}")
+
+    # Logika untuk memproses potongan data sesuai konfigurasi manual chunk
+    actual_start_row = max(0, MY_START_ROW_ABSOLUTE)
+    actual_end_row = min(len(df_full), MY_END_ROW_EXCLUSIVE_ABSOLUTE)
+
+    if actual_start_row < actual_end_row:
+        print(
+            f"--- INFO (ID: {MY_PROCESS_ID}): Akan memproses baris absolut dari {actual_start_row} hingga {actual_end_row - 1} ---")
+        df = df_full.iloc[actual_start_row:actual_end_row].reset_index(drop=True)
+        print(f"--- INFO (ID: {MY_PROCESS_ID}): Jumlah baris yang akan diproses oleh instance ini: {len(df)} ---")
+    else:
+        print(f"--- INFO (ID: {MY_PROCESS_ID}): Rentang baris tidak valid atau tidak ada data untuk diproses. "
+              f"Start Absolut: {MY_START_ROW_ABSOLUTE}, End Absolut: {MY_END_ROW_EXCLUSIVE_ABSOLUTE}, Total Data di File: {len(df_full)} ---")
+        df = pd.DataFrame()  # Buat DataFrame kosong agar skrip selesai dengan baik
+
 except FileNotFoundError:
     print(f"Error: File {input_file} tidak ditemukan. Pastikan file ada di folder yang benar.")
     exit(1)
 except Exception as e:
-    print(f"Error saat membaca file Excel: {str(e)}")
+    print(f"Error saat membaca file Excel atau membagi chunk: {str(e)}")
     print("Pastikan nama sheet (jika ada) sudah benar, misal 'villages'.")
     exit(1)
 
 if df.empty:
-    print("File Excel kosong. Tidak ada data untuk diproses.")
+    print(
+        f"Tidak ada data untuk diproses oleh ID: {MY_PROCESS_ID} (setelah slicing atau file asli kosong). Skrip akan berhenti.")
     exit(0)
 
 
@@ -153,7 +191,7 @@ def scrape_kodepos(url):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        time.sleep(random.uniform(0.5, 1.5))  # Jeda acak sebelum request
+        time.sleep(random.uniform(0.5, 1.5))
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
@@ -190,10 +228,10 @@ def scrape_kodepos(url):
         return "Error Request"
     except Exception:
         return "Error Lainnya"
-        # finally: # Jeda sudah di awal
+
+    # Fungsi buat scraping kode pos dari nomor.net (MENGGUNAKAN cloudscraper dengan retry)
 
 
-# Fungsi buat scraping kode pos dari nomor.net (MENGGUNAKAN cloudscraper dengan retry)
 def scrape_nomor(url, is_debug_target=False):
     if not url or not isinstance(url, str) or not url.startswith("http") or "URL tidak dapat dibuat" in url:
         if is_debug_target and ENABLE_DETAILED_DEBUG: print(
@@ -222,17 +260,16 @@ def scrape_nomor(url, is_debug_target=False):
                 f"DEBUG (scrape_nomor - fallback requests): RequestException: {e}")
             return "Error Request (Fallback)"
 
-    # Jika cloudscraper tersedia, gunakan dengan mekanisme retry
     scraper = cloudscraper.create_scraper()
-    last_error_message = "Gagal setelah beberapa percobaan (nomor.net)"  # Default jika semua retry gagal
+    last_error_message = "Gagal setelah beberapa percobaan (nomor.net)"
 
     for attempt in range(MAX_RETRIES_NOMOR_NET):
-        time.sleep(random.uniform(0.5, 1.2))  # Jeda acak singkat sebelum setiap percobaan
+        time.sleep(random.uniform(0.5, 1.2))
         if is_debug_target and ENABLE_DETAILED_DEBUG:
             print(f"\n--- DEBUG: scrape_nomor (cloudscraper, Percobaan {attempt + 1}/{MAX_RETRIES_NOMOR_NET}) ---")
             print(f"Mencoba scrape dari URL: {url}")
         try:
-            response = scraper.get(url, timeout=25)  # Timeout request dinaikkan sedikit
+            response = scraper.get(url, timeout=25)
             if is_debug_target and ENABLE_DETAILED_DEBUG: print(
                 f"DEBUG (scrape_nomor - cloudscraper): Status Code: {response.status_code} untuk {url}")
             response.raise_for_status()
@@ -328,7 +365,8 @@ def save_batch_data(df_slice_to_save, batch_number_val):
                     ws.cell(row=excel_data_row, column=col_idx_ws).fill = PatternFill(
                         start_color="FFFF00", end_color="FFFF00", fill_type="solid")
         wb.save(batch_file)
-        print(f"Batch {batch_number_val} (kumulatif) disimpan dan di-style di {batch_file}")
+        print(
+            f"Batch {batch_number_val} (kumulatif untuk run chunk {MY_PROCESS_ID}) disimpan dan di-style di {batch_file}")
     except Exception as e:
         print(f"Error saat styling batch file {batch_file}: {str(e)}")
 
@@ -338,28 +376,31 @@ URL_KODEPOS_COL = "URL Pencarian kodepos.co.id"
 URL_NOMOR_COL = "URL Pencarian nomor.net"
 KODE_POS_RESULT_COL = "Kode Pos (Postal Code)"
 
-print(f"Membuat/Memastikan kolom '{URL_KODEPOS_COL}' ada...")
+# Kolom URL dan Kode Pos akan dibuat/di-overwrite di DataFrame `df` (yang sudah di-slice)
+print(f"Membuat/Memastikan kolom '{URL_KODEPOS_COL}' di DataFrame yang diproses (ID: {MY_PROCESS_ID})...")
 df[URL_KODEPOS_COL] = df.apply(generate_kodepos_url, axis=1)
 
-print(f"Membuat/Memastikan kolom '{URL_NOMOR_COL}' ada...")
+print(f"Membuat/Memastikan kolom '{URL_NOMOR_COL}' di DataFrame yang diproses (ID: {MY_PROCESS_ID})...")
 df[URL_NOMOR_COL] = df.apply(generate_nomor_url, axis=1)
 
 if KODE_POS_RESULT_COL not in df.columns:
     df[KODE_POS_RESULT_COL] = ""
 else:
-    df[KODE_POS_RESULT_COL] = ""
+    df[KODE_POS_RESULT_COL] = ""  # Kosongkan untuk diisi ulang oleh proses scraping
 
-print("\nContoh URL kodepos.co.id (5 pertama):")
+print(f"\nContoh URL kodepos.co.id (5 pertama dari data chunk {MY_PROCESS_ID}):")
 print(df[URL_KODEPOS_COL].head().tolist())
-print("\nContoh URL nomor.net (5 pertama):")
+print(f"\nContoh URL nomor.net (5 pertama dari data chunk {MY_PROCESS_ID}):")
 print(df[URL_NOMOR_COL].head().tolist())
 print("-" * 30)
 
 batch_size_val = int(BATCH_SIZE) if str(BATCH_SIZE).isdigit() else 20
 batch_number = 1
 
-print(f"\nMemulai scraping kode pos untuk {len(df)} baris...")
-for i in tqdm(range(len(df)), desc="Scraping Progress"):
+print(
+    f"\nMemulai scraping kode pos untuk {len(df)} baris (ID: {MY_PROCESS_ID}, Jatah: {MY_START_ROW_ABSOLUTE} s.d. {MY_END_ROW_EXCLUSIVE_ABSOLUTE - 1} dari file asli)...")
+# Loop utama sekarang menggunakan DataFrame `df` yang sudah di-slice
+for i in tqdm(range(len(df)), desc=f"Scraping Progress (ID: {MY_PROCESS_ID})"):
     url_kodepos_current = df.at[i, URL_KODEPOS_COL]
     url_nomor_current = df.at[i, URL_NOMOR_COL]
 
@@ -375,12 +416,18 @@ for i in tqdm(range(len(df)), desc="Scraping Progress"):
             is_current_row_debug_target = (
                         DEBUG_TARGET_VILLAGE in vil_excel_check and DEBUG_TARGET_DISTRICT in dist_excel_check)
         except KeyError:
-            if i == 0: tqdm.write(f"Peringatan: Kolom untuk Debug Target tidak ditemukan. Debug per baris tidak aktif.")
+            if i == 0: tqdm.write(
+                f"Peringatan: Kolom untuk Debug Target ('Nama Desa (Village Name)' atau 'Kecamatan (District)') tidak ditemukan. Debug per baris tidak aktif.")
             ENABLE_DETAILED_DEBUG = False
 
     if is_current_row_debug_target and ENABLE_DETAILED_DEBUG:
-        print(f"\n--- PROCESSING DEBUG TARGET ROW ---")
-        print(f"Index: {i}, Desa: {vil_excel_check}, Kecamatan: {dist_excel_check}")
+        # Hitung indeks asli untuk keperluan debug print
+        # Ini asumsi df.index adalah 0-based untuk slice. Jika df hasil iloc mempertahankan index asli, maka df.index[i] akan jadi index asli
+        # Karena kita .reset_index(drop=True), maka i adalah index di slice. Index asli = MY_START_ROW_ABSOLUTE + i
+        original_index_for_debug = MY_START_ROW_ABSOLUTE + i
+        print(
+            f"\n--- PROCESSING DEBUG TARGET ROW (ID: {MY_PROCESS_ID}, Indeks Asli Excel: {original_index_for_debug + 1}, Indeks Slice: {i}) ---")
+        print(f"Desa: {vil_excel_check}, Kecamatan: {dist_excel_check}")
         print(f"URL Nomor.net: {url_nomor_current}")
         print(f"URL Kodepos: {url_kodepos_current}")
 
@@ -402,14 +449,15 @@ for i in tqdm(range(len(df)), desc="Scraping Progress"):
         i, KODE_POS_RESULT_COL] = current_postal_code_found if current_postal_code_found else "Invalid Data (tidak ditemukan)"
 
     if is_current_row_debug_target and ENABLE_DETAILED_DEBUG:
-        print(f"Hasil Kode Pos untuk Debug Target (Index {i}): {df.loc[i, KODE_POS_RESULT_COL]}")
+        print(f"Hasil Kode Pos untuk Debug Target (Indeks Slice {i}): {df.loc[i, KODE_POS_RESULT_COL]}")
         print(f"--- END PROCESSING DEBUG TARGET ROW ---\n")
 
+    # Simpan batch secara kumulatif (kumulatif untuk run chunk ini)
     if (i + 1) % batch_size_val == 0 or ((i + 1) == len(df) and len(df) > 0):
-        start_index_cumulative = 0
-        end_index_cumulative = i + 1
+        start_index_cumulative_in_slice = 0
+        end_index_cumulative_in_slice = i + 1
 
-        df_cumulative_slice_to_save = df.iloc[start_index_cumulative:end_index_cumulative].copy()
+        df_cumulative_slice_to_save = df.iloc[start_index_cumulative_in_slice:end_index_cumulative_in_slice].copy()
 
         if not df_cumulative_slice_to_save.empty:
             save_batch_data(df_cumulative_slice_to_save, batch_number)
@@ -418,13 +466,17 @@ for i in tqdm(range(len(df)), desc="Scraping Progress"):
                 f"--- DEBUG: df_cumulative_slice_to_save KOSONG untuk batch {batch_number}. Tidak ada yang disimpan. ---")
         batch_number += 1
 
-print(f"\nMenyimpan hasil akhir ke {output_file}...")
+# File output akhir hanya akan berisi hasil dari slice yang diproses oleh chunk ini
+print(f"\nMenyimpan hasil dari proses ID: {MY_PROCESS_ID} ({len(df)} baris) ke {output_file}...")
 try:
     styled_df = df.style.apply(highlight_invalid_rows, axis=1, subset=[KODE_POS_RESULT_COL])
     styled_df.to_excel(output_file, index=False, engine='openpyxl')
-    print(f"Selesai! Hasil disimpan di {output_file}")
+    print(f"Selesai! Hasil dari ID: {MY_PROCESS_ID} disimpan di {output_file}")
+    print(
+        f"PERHATIAN: File ini hanya berisi data untuk jatah ID: {MY_PROCESS_ID} (baris {MY_START_ROW_ABSOLUTE} s.d. {MY_END_ROW_EXCLUSIVE_ABSOLUTE - 1} dari file asli).")
+    print(f"Chief dan teman-teman perlu menggabungkannya dengan hasil chunk lain jika sudah semua.")
 except Exception as e:
-    print(f"Error saat menyimpan file Excel final: {str(e)}")
+    print(f"Error saat menyimpan file Excel final untuk ID: {MY_PROCESS_ID}: {str(e)}")
     print("Mencoba menyimpan sebagai CSV biasa tanpa styling...")
     try:
         csv_output_file = output_file.replace(".xlsx", "_plain.csv")
